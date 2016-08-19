@@ -1,0 +1,182 @@
+The BeagleBone Black boot sequences.
+-----------------------------------
+
+By default, the ROM code in the Sitara AM3359 will boot from the MMC1 interface first (the onboard eMMC), followed by MMC0 
+(external uSD), UART0 and USB0.
+
+1 ----> MMC1 (onboard eMMC)
+2 ----> MMC0 (microSD)
+3 ----> UART0
+4 ----> USB0
+
+The BeagleBone Black provides by alternative boot sequences which are selectable by the boot switch (S2). 
+In default mode (S2 not pressed). Switch S2 allows the BeagleBone Black to bypass the onboard eMMC and boot from the removable 
+MicroSD (provided no valid boot device is found on SPI0.) 
+
+1 ----> SPI0,
+2 ----> MMC0 (microSD)
+3 ----> UART0,
+4 ----> USB0.
+
+The ROM code will try to load and execute the first stage bootloader called "MLO" (U-Boot SPL) from a Fat 12/16 or 32 bit MBR base
+filesystem (eMMC/MicroSD) first partition and if it is found it boots from that file.
+U-Boot provides this MLO file as a second-stage boot-loader which then loads the actual U-Boot which has to be provided as a file 
+named u-boot.bin in the same directory. U-Boot itself will then look for a file named uEnv.txt for further configuration and 
+then act upon it.
+
+U-Boot
+------
+
+The next step is to compile U-Boot. As we need to cross compile this for the BeagleBone Black we need a suitable compiler. 
+On Ubuntu this can be installed relatively easy by
+
+sudo apt-get install gcc-arm-linux-gnueabihf
+
+Extract the given u-boot.tar.bz2 file and cd to that folder. Inside that first configure U-Boot for Beaglebone-black by entering 
+a command
+
+$ make CROSS_COMPILE=arm-linux-gnueabihf- distclean
+$ make am335x_boneblack_config
+
+Then with the arm cross-compiler do a make 
+
+$ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf-
+
+After compilation bootloader files will be created MLO, u-boot.img and u-boot.bin, which we need to copy to MicroSD 
+(We see that later). u-boot.img file will be used to boot from MLO and u-boot.bin is used when we need to boot from existing 
+U-Boot or via serial.
+
+If you want to test your U-Boot from existing U-Boot by loadig that to RAM.
+While booting the board, stop autoboot from U-Boot by pressing any key(Assuming that board already connected throuh serial and 
+tftp server is installed). Copy your u-boot.bin file from U-Boot directory to tftpboot directory (/var/lib/tftpboot or /tftpboot).
+
+U-Boot# setenv ipaddr 192.168.1.250
+U-Boot# setenv serverip 192.168.1.1
+U-Boot# tftp 0x80800000 u-boot.bin
+U-Boot# go 0x80800000
+
+Now you a booted to your U-Boot.You can boot your custom linux kernel from here (See next section).
+
+
+Linux kernel compilation
+------------------------
+
+Extract linux-4.1.tar.gz file and cd to that directory. Now we have to
+configure kernel for Beaglebone Black by enternig following command(Assuming cross-compiler already installed).
+
+$ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- bb.org_defconfig
+
+Now its configured and you can start compilation.
+
+$ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf-
+
+After compilation vmlinux image file will be created. But we need to create image for U-Boot. For that you can use a mkimage tools
+ from U-Boot/tools or you can install directly.
+
+$ sudo apt-get install u-boot-tools
+  OR
+$ sudo install tools/mkimage /usr/local/bin
+
+Create a U-Boot kernel image by entering
+
+$ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- uImage dtbs LOADADDR=0x80008000
+
+uImage file be created in a path arch/arm/boot and a am335x-boneblack.dtb file is in arch/arm/boot/dtbs.
+These files you can copy to tftpboot directory or create a link from original location so that avoid repetation of cp command
+Now we build any kernel modules. We can use these modules to be installed in our RootFS (See next chapter).
+
+$ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules
+
+If you are already in U-Boot, we can try to boot kernel from network.
+
+U-Boot# setenv ipaddr 192.168.1.250
+U-Boot# setenv serverip 192.168.1.1
+
+Next load the Kernel image and device tree binary blob. The kernel image is prefixed with a 64 byte MKIMAGE header. 
+To take advantage of eXecute in place (XIP), we load the image at 0x80007FC0 (0x800080000 - 64 bytes) so the kernel
+is loaded at 0x80008000. Load address of device tree binary depends on size of uImage.
+
+U-Boot# tftpboot 0x80F80000 am335x-boneblack.dtb
+U-Boot# tftpboot 0x80007FC0 uImage
+
+Set some bootargs for kernel 
+
+U-Boot# setenv bootargs console=ttyO0,115200n8
+
+And boot from the memory location
+
+U-Boot# bootm 0x80007FC0 - 0x80F80000
+
+This should start booting the kernel and expecting a kernel-panic at end(Missing Root file system).
+We need to provide a RootFS to kernel for booting. You can use a initramfs or a permenent RootFS from MicroSD partition.
+Both we will see in next chapter.
+
+Creating a RootFS
+-----------------
+
+Extract the target.tgz as a root user
+$ sudo tar xvf target.tgz
+
+One Target folder is created. This folder we can use for creating initramfs and permenent RootFS from MicroSD partition.
+
+Using a initramfs
+-----------------
+
+Go to linux source-code folder and configure initramfs 
+$ make menuconfig
+
+General Settings -> Initial RAM filesystem and RAM disk (initramfs/initrd) support (Enable this option).
+Then select Initramfs source file(s) and give your absolute path for Target folder. Then exit by saving the configuration.
+
+You need to repeat the kernel compilation procedure 
+
+
+$ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf-
+$ make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- uImage dtbs LOADADDR=0x80008000
+
+These files you can copy to tftpboot directory. Then repeat steps from U-Boot.
+
+U-Boot# tftpboot 0x81D00000 am335x-boneblack.dtb
+U-Boot# tftpboot 0x80007FC0 uImage
+
+This time we are giving a different load address for device tree file because kernel size increased
+
+U-Boot# setenv bootargs console=ttyO0,115200n8
+U-Boot# bootm 0x80007FC0 - 0x81D00000
+
+Kernel is boots and you can enter to kernel console.
+
+Flashing images to MicroSD
+---------------------------
+
+We need to create partitions in SD card and format according to OMAP3 boot format. 
+WARNING. The content of the SD card fill be deleted during this procedure.
+
+To create partitions and formatting use the mkcard.sh script. Connect your SD card and check the device file by df command.
+
+$ chmod +x mkcard.sh
+$ sudo ./mkcard.sh /dev/sdx
+
+In case of error, switch to root user and repeat.
+
+After completion of script two main partitions will be created Boot (FAT32 Primary) and RootFS (ext4).
+Copy your image files to Boot partition MLO, u-boot.img and uImage.
+
+You need to create a uEnv.txt file to boot kernel image from SD card or tftp
+
+To do a tftpboot, copy the following to uEnv.txt file
+
+ipaddr=192.168.1.250
+serverip=192.168.1.1
+netargs=setenv bootargs console=ttyO0,115200n8
+netboot=echo Booting from network ...;tftpboot 0x81D00000
+am335x-boneblack.dtb;tftpboot 0x80007FC0 uImage;run netargs;bootm 0x80007FC0 - 0x81D00000
+uenvcmd=run netboot
+
+To do a MicroSD boot with RootFS, copy the following to uEnv.txt file (Make sure that you compiled kernel without initramfs path)
+
+netargs=setenv bootargs console=ttyO0,115200n8 root=/dev/mmcblk0p2 ro rootfstype=ext4 rootwait
+netboot=echo Booting from network ...;setenv autoload no;load mmc 0:1 0x80008000 uImage;load mmc 0:1 0x81D00000 am335x-boneblack.dtb;run netargs;bootm 0x80008000 - 0x81D00000
+uenvcmd=run netboot
+
+But you need to copy the contents inside Target folder to MicroSD RootFS partition.

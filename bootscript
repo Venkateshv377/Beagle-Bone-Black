@@ -1,0 +1,37 @@
+gpio set 53;
+i2c mw 0x24 1 0x3e;
+run findfdt;
+mmc dev 0;
+if mmc rescan ;
+then
+    echo micro SD card found;
+    setenv mmcdev 0;
+else
+    echo No micro SD card found, setting mmcdev to 1;
+    setenv mmcdev 1;
+fi;
+setenv bootpart ${mmcdev}:1;
+mmc dev ${mmcdev};
+setenv loadbootenv "load mmc ${bootpart} ${loadaddr} ${bootenv}"
+if mmc rescan;
+then
+    gpio set 54;
+    echo SD/MMC found on device ${mmcdev};
+    if run loadbootenv;
+    then
+        echo Loaded environment from ${bootenv};
+        run importbootenv;
+    fi;
+    if test -n $uenvcmd;
+    then
+        echo Running uenvcmd ...;
+        run uenvcmd;
+    fi;
+    gpio set 55;
+    if run loaduimage;
+    then
+        gpio set 56;
+        run loadfdt;
+        run mmcboot;
+    fi;
+fi;
